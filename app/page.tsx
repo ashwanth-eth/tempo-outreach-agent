@@ -248,6 +248,17 @@ export default function Home() {
         </div>
       </header>
 
+      {/* Explainer banner */}
+      <div className="bg-[#171717] border-b border-[#262626] px-6 py-3">
+        <p className="text-sm text-[#a3a3a3]">
+          <span className="text-[#22c55e] font-medium">Demo:</span>{' '}
+          This shows how one wallet can pay another for AI agent services on Tempo testnet.
+          Each profile parse costs <span className="text-[#ededed]">$0.001</span> and each email draft costs{' '}
+          <span className="text-[#ededed]">$0.001</span>.
+          Watch the User balance decrease and Agent balance increase in real-time as payments flow on-chain.
+        </p>
+      </div>
+
       {/* Three-panel layout */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel - Controls */}
