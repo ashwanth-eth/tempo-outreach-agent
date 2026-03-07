@@ -30,3 +30,7 @@ coverage/
 
 # Misc
 *.tsbuildinfo
+
+# Test files
+test-*.png
+test-*.jpg

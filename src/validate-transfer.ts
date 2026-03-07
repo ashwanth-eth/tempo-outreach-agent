@@ -64,7 +64,7 @@ async function main() {
     .extend(tempoActions());
 
   // Check TIP-20 token balance
-  const balance = await client.token.getBalance({
+  const balance = await (client.token.getBalance as (params: { token: `0x${string}`; address: `0x${string}` }) => Promise<bigint>)({
     token: ALPHA_USD,
     address: account.address,
   });
