@@ -7,33 +7,34 @@
  * Run: npm run validate
  */
 
-import { createWalletClient, createPublicClient, http, parseUnits, formatUnits } from 'viem';
+import 'dotenv/config';
+import {
+  createClient,
+  http,
+  publicActions,
+  walletActions,
+  parseUnits,
+  formatUnits,
+  stringToHex,
+  pad,
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { tempoModerato } from 'viem/chains';
+import { tempoActions } from 'viem/tempo';
 
-// Tempo Testnet configuration
-const TEMPO_TESTNET = {
-  id: 42431,
-  name: 'Tempo Testnet',
-  nativeCurrency: {
-    name: 'USD',
-    symbol: 'USD',
-    decimals: 18,
-  },
-  rpcUrls: {
-    default: { http: ['https://rpc.testnet.tempo.xyz'] },
-  },
-  blockExplorers: {
-    default: { name: 'Tempo Explorer', url: 'https://explore.tempo.xyz' },
-  },
-} as const;
+// TIP-20 AlphaUSD token address on Tempo testnet (Moderato)
+const ALPHA_USD = '0x20c0000000000000000000000000000000000001' as const;
 
-// Test memo structure for the outreach agent
-const TEST_MEMO = {
-  action: 'validate_transfer',
-  agent: 'tempo-outreach-agent',
-  version: '0.1.0',
-  timestamp: new Date().toISOString(),
-};
+/**
+ * Encode a memo string into bytes32 format for TIP-20 transfers.
+ * Max ~31 characters (32 bytes minus null padding).
+ */
+function encodeMemo(memo: string): `0x${string}` {
+  if (memo.length > 31) {
+    throw new Error(`Memo too long: ${memo.length} chars (max 31)`);
+  }
+  return pad(stringToHex(memo), { size: 32 });
+}
 
 async function main() {
   // Load private key from environment
@@ -52,54 +53,54 @@ async function main() {
   const account = privateKeyToAccount(privateKey as `0x${string}`);
   console.log('Wallet address:', account.address);
 
-  // Create clients
-  const publicClient = createPublicClient({
-    chain: TEMPO_TESTNET,
-    transport: http(),
-  });
-
-  const walletClient = createWalletClient({
+  // Create Tempo client with all extensions
+  const client = createClient({
     account,
-    chain: TEMPO_TESTNET,
+    chain: tempoModerato,
     transport: http(),
-  });
+  })
+    .extend(publicActions)
+    .extend(walletActions)
+    .extend(tempoActions());
 
-  // Check balance
-  const balance = await publicClient.getBalance({ address: account.address });
-  console.log('Balance:', formatUnits(balance, 18), 'USD');
+  // Check TIP-20 token balance
+  const balance = await client.token.getBalance({
+    token: ALPHA_USD,
+    address: account.address,
+  });
+  console.log('USD Balance:', formatUnits(balance, 6), 'USD');
 
   if (balance === 0n) {
     console.error('');
-    console.error('Error: Wallet has no balance');
-    console.log('Fund your wallet using the tempo_fundAddress RPC method');
+    console.error('Error: Wallet has no USD balance');
+    console.log('Fund your wallet using the faucet: https://docs.tempo.xyz/quickstart/faucet');
     process.exit(1);
   }
 
-  // Send a test transfer to self with memo
-  // TODO: Verify the exact TIP-20 memo field format from Tempo docs
-  // For now, encoding memo as hex data
-  const memoHex = `0x${Buffer.from(JSON.stringify(TEST_MEMO)).toString('hex')}` as `0x${string}`;
+  // Test memo: action:target format (fits in 32 bytes)
+  const memoString = 'agent:validate:v1';
+  const memoBytes32 = encodeMemo(memoString);
 
   console.log('');
-  console.log('Sending test transfer...');
-  console.log('Memo:', JSON.stringify(TEST_MEMO, null, 2));
+  console.log('Sending test transfer with memo...');
+  console.log('Memo string:', memoString);
+  console.log('Memo bytes32:', memoBytes32);
 
   try {
-    const hash = await walletClient.sendTransaction({
+    // Send TIP-20 transfer with memo
+    const { receipt } = await client.token.transferSync({
+      token: ALPHA_USD,
       to: account.address, // Send to self for testing
-      value: parseUnits('0.001', 18), // 0.001 USD
-      data: memoHex,
+      amount: parseUnits('0.001', 6), // 0.001 USD (6 decimals)
+      memo: memoBytes32,
     });
 
     console.log('');
     console.log('✓ Transaction sent!');
-    console.log('Hash:', hash);
-    console.log('Explorer:', `https://explore.tempo.xyz/tx/${hash}`);
+    console.log('Hash:', receipt.transactionHash);
+    console.log('Explorer:', `https://explore.tempo.xyz/tx/${receipt.transactionHash}`);
     console.log('');
-    console.log('Next steps:');
-    console.log('1. Open the explorer link above');
-    console.log('2. Verify the memo appears correctly in the transaction');
-    console.log('3. Note any differences in memo format for docs/tempo-notes.md');
+    console.log('Validation complete! Memo field works.');
 
   } catch (error) {
     console.error('');
