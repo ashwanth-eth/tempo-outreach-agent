@@ -1,0 +1,225 @@
+import { NextRequest, NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
+import {
+  createClient,
+  http,
+  publicActions,
+  walletActions,
+  parseUnits,
+  formatUnits,
+  stringToHex,
+  pad,
+} from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { tempoModerato } from 'viem/chains';
+import { tempoActions } from 'viem/tempo';
+
+const ALPHA_USD = '0x20c0000000000000000000000000000000000001' as const;
+
+const COSTS = {
+  parse: 0.001,
+  draft: 0.001,
+};
+
+// Default agent configuration
+const AGENT_CONFIG = {
+  senderName: 'Ashwanth',
+  senderContext: 'Builder exploring AI agents with autonomous payments',
+  outreachPurpose: 'Connecting with people building in the AI + crypto space for the Tempo hackathon on March 19th',
+};
+
+function encodeMemo(memo: string): `0x${string}` {
+  const truncated = memo.slice(0, 31);
+  return pad(stringToHex(truncated), { size: 32 });
+}
+
+function createTempoClient(privateKey: string) {
+  const account = privateKeyToAccount(privateKey as `0x${string}`);
+  const client = createClient({
+    account,
+    chain: tempoModerato,
+    transport: http(),
+  })
+    .extend(publicActions)
+    .extend(walletActions)
+    .extend(tempoActions());
+
+  return { client, account };
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData();
+    const image = formData.get('image') as File;
+    const maxPerProfile = parseFloat(formData.get('maxPerProfile') as string);
+    const maxTotal = parseFloat(formData.get('maxTotal') as string);
+    const currentSpent = parseFloat(formData.get('currentSpent') as string) || 0;
+
+    if (!image) {
+      return NextResponse.json({ error: 'No image provided' }, { status: 400 });
+    }
+
+    const costPerProfile = COSTS.parse + COSTS.draft;
+
+    // Check budget
+    if (currentSpent + costPerProfile > maxTotal) {
+      return NextResponse.json({
+        skipped: true,
+        reason: 'Would exceed total budget',
+      });
+    }
+
+    if (costPerProfile > maxPerProfile) {
+      return NextResponse.json({
+        skipped: true,
+        reason: 'Exceeds per-profile limit',
+      });
+    }
+
+    // Check environment
+    const privateKey = process.env.PRIVATE_KEY;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+
+    if (!privateKey || !anthropicKey) {
+      return NextResponse.json(
+        { error: 'Missing environment variables' },
+        { status: 500 }
+      );
+    }
+
+    // Convert image to base64
+    const bytes = await image.arrayBuffer();
+    const base64 = Buffer.from(bytes).toString('base64');
+    const mediaType = image.type as 'image/png' | 'image/jpeg' | 'image/webp';
+
+    // Initialize clients
+    const anthropic = new Anthropic();
+    const tempoClient = createTempoClient(privateKey);
+
+    // Step 1: Extract profile using Claude Vision
+    const extractResponse = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mediaType,
+                data: base64,
+              },
+            },
+            {
+              type: 'text',
+              text: `Extract the LinkedIn profile information from this screenshot. Return ONLY a JSON object with these fields:
+- name: Full name
+- company: Current company name
+- role: Current job title
+- headline: LinkedIn headline (if visible)
+- location: Location (if visible)
+- about: Brief summary or about section (if visible)
+
+If a field is not visible, omit it. Return ONLY the JSON object, no other text.`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const extractContent = extractResponse.content[0];
+    if (extractContent.type !== 'text') {
+      throw new Error('Unexpected response type from Claude');
+    }
+
+    let jsonStr = extractContent.text.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    }
+    const profile = JSON.parse(jsonStr);
+
+    // Step 2: Pay for parse action
+    const parseMemo = `parse:${profile.name}`.slice(0, 31);
+    const { receipt: parseReceipt } = await (tempoClient.client as any).token.transferSync({
+      token: ALPHA_USD,
+      to: tempoClient.account.address,
+      amount: parseUnits(COSTS.parse.toString(), 6),
+      memo: encodeMemo(parseMemo),
+    });
+
+    // Step 3: Draft email
+    const draftResponse = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1024,
+      messages: [
+        {
+          role: 'user',
+          content: `Write a personalized cold outreach email for the following person:
+
+**Target Profile:**
+- Name: ${profile.name}
+- Role: ${profile.role}
+- Company: ${profile.company}
+${profile.headline ? `- Headline: ${profile.headline}` : ''}
+${profile.about ? `- About: ${profile.about}` : ''}
+
+**Sender Context:**
+- Name: ${AGENT_CONFIG.senderName}
+- Context: ${AGENT_CONFIG.senderContext}
+- Purpose: ${AGENT_CONFIG.outreachPurpose}
+
+**Instructions:**
+1. Keep it under 150 words
+2. Be genuine and specific — reference something about their role or company
+3. Have a clear, low-friction ask (e.g., "Would you be open to a 15-minute call?")
+4. No fake flattery or generic templates
+5. Professional but warm tone
+
+Return ONLY the email body (no subject line, no signature). Start with the greeting.`,
+        },
+      ],
+    });
+
+    const draftContent = draftResponse.content[0];
+    if (draftContent.type !== 'text') {
+      throw new Error('Unexpected response type from Claude');
+    }
+    const email = draftContent.text.trim();
+
+    // Step 4: Pay for draft action
+    const draftMemo = `draft:${profile.name}`.slice(0, 31);
+    const { receipt: draftReceipt } = await (tempoClient.client as any).token.transferSync({
+      token: ALPHA_USD,
+      to: tempoClient.account.address,
+      amount: parseUnits(COSTS.draft.toString(), 6),
+      memo: encodeMemo(draftMemo),
+    });
+
+    return NextResponse.json({
+      profile,
+      email,
+      transactions: {
+        parse: {
+          hash: parseReceipt.transactionHash,
+          memo: parseMemo,
+          cost: COSTS.parse,
+        },
+        draft: {
+          hash: draftReceipt.transactionHash,
+          memo: draftMemo,
+          cost: COSTS.draft,
+        },
+      },
+      totalCost: COSTS.parse + COSTS.draft,
+    });
+
+  } catch (error) {
+    console.error('Process error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 }
+    );
+  }
+}
