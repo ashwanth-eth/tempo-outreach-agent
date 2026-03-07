@@ -1,5 +1,6 @@
 /**
- * Tempo TIP-20 client for payments
+ * Tempo TIP-20 client for two-sided payments
+ * User wallet pays Agent wallet for services
  */
 
 import {
@@ -17,7 +18,7 @@ import { tempoModerato } from 'viem/chains';
 import { tempoActions } from 'viem/tempo';
 
 // TIP-20 AlphaUSD token address on Tempo testnet (Moderato)
-const ALPHA_USD = '0x20c0000000000000000000000000000000000001' as const;
+export const ALPHA_USD = '0x20c0000000000000000000000000000000000001' as const;
 
 // Cost per action in USD (using small amounts for testnet)
 export const COSTS = {
@@ -27,12 +28,22 @@ export const COSTS = {
 
 export type ActionType = keyof typeof COSTS;
 
+export type PaymentDirection = 'outbound' | 'inbound';
+
+export interface PaymentResult {
+  hash: string;
+  memo: string;
+  cost: number;
+  from: `0x${string}`;
+  to: `0x${string}`;
+  direction: PaymentDirection;
+}
+
 /**
  * Encode a memo string into bytes32 format for TIP-20 transfers.
  * Max ~31 characters (32 bytes minus null padding).
  */
 export function encodeMemo(memo: string): `0x${string}` {
-  // Truncate if too long
   const truncated = memo.slice(0, 31);
   return pad(stringToHex(truncated), { size: 32 });
 }
@@ -67,20 +78,26 @@ export async function getBalance(client: any, address: `0x${string}`): Promise<n
 }
 
 /**
- * Pay for an action with a structured memo
+ * User pays agent for a service action
+ * Memo format: service:target:clientId (truncated to 31 chars)
  */
-export async function payForAction(
-  client: any,
+export async function payAgentForService(
+  userClient: any,
+  agentAddress: `0x${string}`,
   action: ActionType,
   target: string,
-): Promise<{ hash: string; memo: string; cost: number }> {
+): Promise<PaymentResult> {
   const cost = COSTS[action];
-  const memoString = `${action}:${target}`.slice(0, 31);
+  const userAddress = userClient.account!.address as `0x${string}`;
+
+  // Memo format: action:target:client (client is shortened address)
+  const clientId = userAddress.slice(0, 6);
+  const memoString = `${action}:${target}:${clientId}`.slice(0, 31);
   const memoBytes32 = encodeMemo(memoString);
 
-  const { receipt } = await client.token.transferSync({
+  const { receipt } = await userClient.token.transferSync({
     token: ALPHA_USD,
-    to: client.account!.address, // Pay to self (simulating payment to service)
+    to: agentAddress,
     amount: parseUnits(cost.toString(), 6),
     memo: memoBytes32,
   });
@@ -89,6 +106,9 @@ export async function payForAction(
     hash: receipt.transactionHash,
     memo: memoString,
     cost,
+    from: userAddress,
+    to: agentAddress,
+    direction: 'outbound', // From user's perspective
   };
 }
 

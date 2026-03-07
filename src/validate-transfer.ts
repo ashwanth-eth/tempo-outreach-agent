@@ -37,15 +37,15 @@ function encodeMemo(memo: string): `0x${string}` {
 }
 
 async function main() {
-  // Load private key from environment
-  const privateKey = process.env.PRIVATE_KEY;
+  // Load private key from environment (support both old and new names)
+  const privateKey = process.env.AGENT_PRIVATE_KEY || process.env.PRIVATE_KEY;
   if (!privateKey) {
-    console.error('Error: PRIVATE_KEY not set in environment');
+    console.error('Error: AGENT_PRIVATE_KEY not set in environment');
     console.log('');
     console.log('To set up:');
     console.log('1. Copy .env.example to .env');
-    console.log('2. Add your testnet private key');
-    console.log('3. Fund your wallet via tempo_fundAddress RPC method');
+    console.log('2. Add your testnet private keys');
+    console.log('3. Fund wallets via faucet: https://docs.tempo.xyz/quickstart/faucet');
     process.exit(1);
   }
 

@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ControlPanel } from './components/ControlPanel';
 import { ActivityFeed } from './components/ActivityFeed';
 import { AuditLog } from './components/AuditLog';
+import { WalletDisplay } from './components/WalletDisplay';
 
 export interface LogEntry {
   id: string;
@@ -21,6 +22,9 @@ export interface Transaction {
   timestamp: Date;
   action: 'parse' | 'draft';
   target: string;
+  from: string;
+  to: string;
+  direction: 'outbound' | 'inbound';
 }
 
 export interface ProcessedProfile {
@@ -31,14 +35,57 @@ export interface ProcessedProfile {
   transactions: Transaction[];
 }
 
+export interface WalletInfo {
+  address: string;
+  balance: number;
+  label: string;
+}
+
 export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [profiles, setProfiles] = useState<ProcessedProfile[]>([]);
   const [totalSpent, setTotalSpent] = useState(0);
-  const [walletAddress] = useState('0xA8C74E47a871B1849601870d1437e39b45280536');
-  const [balance] = useState(999999.99);
+
+  // Two-wallet system
+  const [userWallet, setUserWallet] = useState<WalletInfo>({
+    address: '',
+    balance: 0,
+    label: 'User Wallet',
+  });
+  const [agentWallet, setAgentWallet] = useState<WalletInfo>({
+    address: '',
+    balance: 0,
+    label: 'Agent Wallet',
+  });
+  const [walletsLoaded, setWalletsLoaded] = useState(false);
+
+  // Fetch wallet info on mount
+  useEffect(() => {
+    async function fetchWallets() {
+      try {
+        const response = await fetch('/api/process');
+        if (response.ok) {
+          const data = await response.json();
+          setUserWallet({
+            address: data.wallets.user,
+            balance: data.balances.user,
+            label: 'User Wallet',
+          });
+          setAgentWallet({
+            address: data.wallets.agent,
+            balance: data.balances.agent,
+            label: 'Agent Wallet',
+          });
+          setWalletsLoaded(true);
+        }
+      } catch (error) {
+        console.error('Failed to fetch wallets:', error);
+      }
+    }
+    fetchWallets();
+  }, []);
 
   const addLog = useCallback((entry: Omit<LogEntry, 'id' | 'timestamp'>) => {
     setLogs((prev) => [
@@ -61,6 +108,9 @@ export default function Home() {
 
     addLog({ type: 'info', message: `Starting agent with ${files.length} profile(s)...` });
     addLog({ type: 'info', message: `Budget: $${config.maxPerProfile}/profile, $${config.maxTotal} total` });
+    addLog({ type: 'info', message: `User pays → Agent earns` });
+
+    let currentSpent = 0;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -72,7 +122,7 @@ export default function Home() {
         formData.append('image', file);
         formData.append('maxPerProfile', config.maxPerProfile.toString());
         formData.append('maxTotal', config.maxTotal.toString());
-        formData.append('currentSpent', totalSpent.toString());
+        formData.append('currentSpent', currentSpent.toString());
 
         addLog({ type: 'info', message: `📄 Extracting profile from ${file.name}...` });
 
@@ -93,46 +143,58 @@ export default function Home() {
           continue;
         }
 
+        // Update wallet balances in real-time
+        setUserWallet((prev) => ({ ...prev, balance: result.balances.user }));
+        setAgentWallet((prev) => ({ ...prev, balance: result.balances.agent }));
+
         // Log the successful extraction
         addLog({
           type: 'info',
           message: `   Found: ${result.profile.name} — ${result.profile.role} at ${result.profile.company}`,
         });
 
-        // Log parse payment
+        // Log parse payment (user → agent)
         addLog({
           type: 'payment',
-          message: `💰 Paid for profile parse ($${result.transactions.parse.cost})`,
+          message: `💸 User paid Agent $${result.transactions.parse.cost} for parse`,
           txHash: result.transactions.parse.hash,
           cost: result.transactions.parse.cost,
         });
-        addTransaction({
+        const parseTx: Transaction = {
           hash: result.transactions.parse.hash,
           memo: result.transactions.parse.memo,
           amount: result.transactions.parse.cost,
           timestamp: new Date(),
           action: 'parse',
           target: result.profile.name,
-        });
+          from: result.transactions.parse.from,
+          to: result.transactions.parse.to,
+          direction: 'outbound',
+        };
+        addTransaction(parseTx);
 
         // Log draft
         addLog({ type: 'info', message: `✉️ Drafted email (${result.email.split(' ').length} words)` });
 
-        // Log draft payment
+        // Log draft payment (user → agent)
         addLog({
           type: 'payment',
-          message: `💰 Paid for email draft ($${result.transactions.draft.cost})`,
+          message: `💸 User paid Agent $${result.transactions.draft.cost} for draft`,
           txHash: result.transactions.draft.hash,
           cost: result.transactions.draft.cost,
         });
-        addTransaction({
+        const draftTx: Transaction = {
           hash: result.transactions.draft.hash,
           memo: result.transactions.draft.memo,
           amount: result.transactions.draft.cost,
           timestamp: new Date(),
           action: 'draft',
           target: result.profile.name,
-        });
+          from: result.transactions.draft.from,
+          to: result.transactions.draft.to,
+          direction: 'outbound',
+        };
+        addTransaction(draftTx);
 
         // Add to processed profiles
         setProfiles((prev) => [
@@ -142,29 +204,12 @@ export default function Home() {
             role: result.profile.role,
             company: result.profile.company,
             email: result.email,
-            transactions: [
-              {
-                hash: result.transactions.parse.hash,
-                memo: result.transactions.parse.memo,
-                amount: result.transactions.parse.cost,
-                timestamp: new Date(),
-                action: 'parse',
-                target: result.profile.name,
-              },
-              {
-                hash: result.transactions.draft.hash,
-                memo: result.transactions.draft.memo,
-                amount: result.transactions.draft.cost,
-                timestamp: new Date(),
-                action: 'draft',
-                target: result.profile.name,
-              },
-            ],
+            transactions: [parseTx, draftTx],
           },
         ]);
 
-        addLog({ type: 'success', message: `✅ Complete — Total spent: $${(totalSpent + result.totalCost).toFixed(4)}` });
-        setTotalSpent((prev) => prev + result.totalCost);
+        currentSpent += result.totalCost;
+        addLog({ type: 'success', message: `✅ Complete — User spent: $${currentSpent.toFixed(4)}` });
 
       } catch (error) {
         addLog({
@@ -174,23 +219,31 @@ export default function Home() {
       }
     }
 
-    addLog({ type: 'success', message: `━━━ Done! Processed ${profiles.length} profiles ━━━` });
+    addLog({ type: 'success', message: `━━━ Done! Processed ${profiles.length + 1} profiles ━━━` });
     setIsRunning(false);
   };
 
   return (
     <main className="h-screen flex flex-col">
-      {/* Header */}
+      {/* Header with dual wallet display */}
       <header className="border-b border-[#262626] px-6 py-4">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">Tempo Outreach Agent</h1>
-            <p className="text-sm text-[#737373]">AI agent with autonomous TIP-20 payments</p>
+            <p className="text-sm text-[#737373]">Two-sided agentic commerce with TIP-20</p>
           </div>
-          <div className="text-right text-sm">
-            <div className="text-[#737373]">Wallet</div>
-            <div className="font-mono text-xs">{walletAddress.slice(0, 6)}...{walletAddress.slice(-4)}</div>
-            <div className="text-[#22c55e]">${balance.toLocaleString()} AlphaUSD</div>
+          <div className="flex gap-6">
+            <WalletDisplay
+              wallet={userWallet}
+              direction="outbound"
+              isLoading={!walletsLoaded}
+            />
+            <div className="flex items-center text-[#737373]">→</div>
+            <WalletDisplay
+              wallet={agentWallet}
+              direction="inbound"
+              isLoading={!walletsLoaded}
+            />
           </div>
         </div>
       </header>
@@ -214,7 +267,12 @@ export default function Home() {
 
         {/* Right Panel - Audit Log */}
         <div className="w-96 overflow-y-auto">
-          <AuditLog transactions={transactions} totalSpent={totalSpent} />
+          <AuditLog
+            transactions={transactions}
+            totalSpent={totalSpent}
+            userAddress={userWallet.address}
+            agentAddress={agentWallet.address}
+          />
         </div>
       </div>
     </main>

@@ -47,6 +47,14 @@ function createTempoClient(privateKey: string) {
   return { client, account };
 }
 
+async function getBalance(client: any, address: `0x${string}`): Promise<number> {
+  const balance = await client.token.getBalance({
+    token: ALPHA_USD,
+    address,
+  });
+  return Number(formatUnits(balance, 6));
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -76,13 +84,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Check environment
-    const privateKey = process.env.PRIVATE_KEY;
+    // Check environment - now need both wallet keys
+    const agentPrivateKey = process.env.AGENT_PRIVATE_KEY || process.env.PRIVATE_KEY;
+    const userPrivateKey = process.env.USER_PRIVATE_KEY;
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-    if (!privateKey || !anthropicKey) {
+    if (!agentPrivateKey || !userPrivateKey || !anthropicKey) {
       return NextResponse.json(
-        { error: 'Missing environment variables' },
+        { error: 'Missing environment variables (AGENT_PRIVATE_KEY, USER_PRIVATE_KEY, ANTHROPIC_API_KEY)' },
         { status: 500 }
       );
     }
@@ -92,9 +101,13 @@ export async function POST(request: NextRequest) {
     const base64 = Buffer.from(bytes).toString('base64');
     const mediaType = image.type as 'image/png' | 'image/jpeg' | 'image/webp';
 
-    // Initialize clients
+    // Initialize clients - both user and agent wallets
     const anthropic = new Anthropic();
-    const tempoClient = createTempoClient(privateKey);
+    const userWallet = createTempoClient(userPrivateKey);
+    const agentWallet = createTempoClient(agentPrivateKey);
+
+    const userAddress = userWallet.account.address;
+    const agentAddress = agentWallet.account.address;
 
     // Step 1: Extract profile using Claude Vision
     const extractResponse = await anthropic.messages.create({
@@ -140,14 +153,20 @@ If a field is not visible, omit it. Return ONLY the JSON object, no other text.`
     }
     const profile = JSON.parse(jsonStr);
 
-    // Step 2: Pay for parse action
-    const parseMemo = `parse:${profile.name}`.slice(0, 31);
-    const { receipt: parseReceipt } = await (tempoClient.client as any).token.transferSync({
+    // Step 2: User pays agent for parse action
+    // Memo format: service:target:clientId
+    const clientId = userAddress.slice(0, 6);
+    const parseMemo = `parse:${profile.name}:${clientId}`.slice(0, 31);
+    const { receipt: parseReceipt } = await (userWallet.client as any).token.transferSync({
       token: ALPHA_USD,
-      to: tempoClient.account.address,
+      to: agentAddress, // User pays agent
       amount: parseUnits(COSTS.parse.toString(), 6),
       memo: encodeMemo(parseMemo),
     });
+
+    // Get updated balances after parse payment
+    const userBalanceAfterParse = await getBalance(userWallet.client, userAddress);
+    const agentBalanceAfterParse = await getBalance(agentWallet.client, agentAddress);
 
     // Step 3: Draft email
     const draftResponse = await anthropic.messages.create({
@@ -188,14 +207,18 @@ Return ONLY the email body (no subject line, no signature). Start with the greet
     }
     const email = draftContent.text.trim();
 
-    // Step 4: Pay for draft action
-    const draftMemo = `draft:${profile.name}`.slice(0, 31);
-    const { receipt: draftReceipt } = await (tempoClient.client as any).token.transferSync({
+    // Step 4: User pays agent for draft action
+    const draftMemo = `draft:${profile.name}:${clientId}`.slice(0, 31);
+    const { receipt: draftReceipt } = await (userWallet.client as any).token.transferSync({
       token: ALPHA_USD,
-      to: tempoClient.account.address,
+      to: agentAddress, // User pays agent
       amount: parseUnits(COSTS.draft.toString(), 6),
       memo: encodeMemo(draftMemo),
     });
+
+    // Get final balances
+    const userBalanceFinal = await getBalance(userWallet.client, userAddress);
+    const agentBalanceFinal = await getBalance(agentWallet.client, agentAddress);
 
     return NextResponse.json({
       profile,
@@ -205,18 +228,70 @@ Return ONLY the email body (no subject line, no signature). Start with the greet
           hash: parseReceipt.transactionHash,
           memo: parseMemo,
           cost: COSTS.parse,
+          from: userAddress,
+          to: agentAddress,
+          direction: 'outbound',
         },
         draft: {
           hash: draftReceipt.transactionHash,
           memo: draftMemo,
           cost: COSTS.draft,
+          from: userAddress,
+          to: agentAddress,
+          direction: 'outbound',
         },
       },
       totalCost: COSTS.parse + COSTS.draft,
+      balances: {
+        user: userBalanceFinal,
+        agent: agentBalanceFinal,
+      },
+      wallets: {
+        user: userAddress,
+        agent: agentAddress,
+      },
     });
 
   } catch (error) {
     console.error('Process error:', error);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 }
+    );
+  }
+}
+
+// New endpoint to get wallet info
+export async function GET() {
+  try {
+    const agentPrivateKey = process.env.AGENT_PRIVATE_KEY || process.env.PRIVATE_KEY;
+    const userPrivateKey = process.env.USER_PRIVATE_KEY;
+
+    if (!agentPrivateKey || !userPrivateKey) {
+      return NextResponse.json(
+        { error: 'Missing wallet environment variables' },
+        { status: 500 }
+      );
+    }
+
+    const userWallet = createTempoClient(userPrivateKey);
+    const agentWallet = createTempoClient(agentPrivateKey);
+
+    const userBalance = await getBalance(userWallet.client, userWallet.account.address);
+    const agentBalance = await getBalance(agentWallet.client, agentWallet.account.address);
+
+    return NextResponse.json({
+      wallets: {
+        user: userWallet.account.address,
+        agent: agentWallet.account.address,
+      },
+      balances: {
+        user: userBalance,
+        agent: agentBalance,
+      },
+    });
+  } catch (error) {
+    console.error('Get wallets error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
