@@ -1,0 +1,29 @@
+{
+  "name": "tempo-outreach-agent",
+  "version": "0.1.0",
+  "description": "AI agent that pays for its own research using TIP-20 stablecoins on Tempo testnet",
+  "type": "module",
+  "scripts": {
+    "validate": "tsx src/validate-transfer.ts",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "keywords": [
+    "tempo",
+    "tip-20",
+    "ai-agent",
+    "stablecoin",
+    "web3"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
