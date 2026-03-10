@@ -25,7 +25,7 @@ const COSTS = {
 const AGENT_CONFIG = {
   senderName: 'Ashwanth',
   senderContext: 'Builder exploring AI agents with autonomous payments',
-  outreachPurpose: 'Connecting with people building in the AI + crypto space for the Tempo hackathon on March 19th',
+  outreachPurpose: 'Connecting with people building in the AI + crypto space',
 };
 
 function encodeMemo(memo: string): `0x${string}` {
